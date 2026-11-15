@@ -22,10 +22,10 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
 <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
 <link rel="stylesheet" href="vendor/maplibre-gl.css">
-<link rel="stylesheet" href="styles.css?v=3">
+<link rel="stylesheet" href="styles.css?v=4">
 <script src="vendor/maplibre-gl.js" defer></script>
-<script src="map.js?v=3" defer></script>
-<script src="app.js?v=3" defer></script>
+<script src="map.js?v=4" defer></script>
+<script src="app.js?v=4" defer></script>
 </head>
 <body>
 <header class="bar">
@@ -48,6 +48,7 @@
   <div class="tools">
     <label class="sortbox">Sort
       <select id="sort" aria-label="Sort aircraft">
+        <option value="fleet" selected>Fleet order</option>
         <option value="status">Flying first</option>
         <option value="tail">Tail</option>
         <option value="seen">Last seen</option>

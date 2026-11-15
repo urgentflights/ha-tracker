@@ -74,7 +74,9 @@ function ago(t) {
 }
 
 let fleet = {tails: []}, st = {planes: {}}, liveState = 'off', liveFailed = false, liveBusy = false;
-let openId = null, query = '', sortBy = 'status';
+const FLEET_ORDER = ['N18H','N248HA','N512HA','N613HA','4X-BHS','4X-BEX','4X-BOB','4X-BHT'];
+const fleetIdx = tail => { const i = FLEET_ORDER.indexOf(tail); return i < 0 ? 1000 + String(tail).charCodeAt(0) : i; };
+let openId = null, query = '', sortBy = 'fleet';
 const offRegions = new Set(JSON.parse(localStorage.getItem(LS('off')) || '[]'));
 try { const v = localStorage.getItem(LS('sort')); if (v) sortBy = v; } catch {}
 
@@ -239,10 +241,11 @@ function render() {
   $('#summary').innerHTML = summary(list);
   const icons = window.HAMap?.icons || {};
   const shown = list.slice().sort((a, b) => {
+    if (sortBy === 'fleet') return fleetIdx(a.tail) - fleetIdx(b.tail);
     if (sortBy === 'tail') return a.tail.localeCompare(b.tail);
-    if (sortBy === 'seen') return (b.observedAt || 0) - (a.observedAt || 0);
+    if (sortBy === 'seen') return (b.observedAt || 0) - (a.observedAt || 0) || fleetIdx(a.tail) - fleetIdx(b.tail);
     const rank = {air: 0, move: 1, ground: 2, lost: 3};
-    return (rank[a.kind] ?? 4) - (rank[b.kind] ?? 4) || (b.observedAt || 0) - (a.observedAt || 0) || a.tail.localeCompare(b.tail);
+    return (rank[a.kind] ?? 4) - (rank[b.kind] ?? 4) || (b.observedAt || 0) - (a.observedAt || 0) || fleetIdx(a.tail) - fleetIdx(b.tail);
   });
   $('#sort').value = sortBy;
   $('#list').innerHTML = shown.length ? shown.map(a => {
