@@ -1,0 +1,109 @@
+{
+ "tails": [
+  {
+   "tail": "N18H",
+   "hex": "a13f02",
+   "model": "Gulfstream G550",
+   "faaModel": "GULFSTREAM AEROSPACE GV-SP (G550)",
+   "year": "2011",
+   "owner": "INFINITY & BEYOND LLC",
+   "category": "jet",
+   "region": "United States",
+   "color": "#38bdf8",
+   "confidence": "high",
+   "source": "FAA registry (Nov 2026); official Hatzolah Air G550 fleet page; photographed in Hatzolah Air titles (ex-N1916W, same s/n 5328)",
+   "status": "Valid"
+  },
+  {
+   "tail": "N248HA",
+   "hex": "a24e67",
+   "model": "Citation X",
+   "faaModel": "CESSNA 750",
+   "year": "2008",
+   "owner": "H CITATION X LLC",
+   "category": "jet",
+   "region": "United States",
+   "color": "#f59e0b",
+   "confidence": "high",
+   "source": "FAA registry (Nov 2026); official Hatzolah Air Citation X fleet page; photographed in Hatzolah Air titles",
+   "status": "Valid"
+  },
+  {
+   "tail": "N512HA",
+   "hex": "a6698d",
+   "model": "Citation X",
+   "faaModel": "CESSNA 750",
+   "year": "2008",
+   "owner": "HA X288 LLC",
+   "category": "jet",
+   "region": "United States",
+   "color": "#34d399",
+   "confidence": "high",
+   "source": "FAA registry (Nov 2026); official Hatzolah Air Citation X fleet page; photographed in Hatzolah Air titles",
+   "status": "Valid"
+  },
+  {
+   "tail": "N613HA",
+   "hex": "a7fa93",
+   "model": "Agusta A109E",
+   "faaModel": "AGUSTA SPA A109E",
+   "year": "2006",
+   "owner": "HA 109E LLC",
+   "category": "helicopter",
+   "region": "United States",
+   "color": "#c084fc",
+   "confidence": "high",
+   "source": "FAA registry (Nov 2026); Boro Park 24 (15 Aug 2024) announced this as Hatzolah Air's first US-based helicopter, based at Sullivan County Airport; photographed in Hatzolah Air titles at KMSV (2025)",
+   "status": "Valid",
+   "note": "This tail previously belonged to Hatzolah Air's Learjet 60 (s/n 191), whose registration was cancelled in April 2025. The Lear is no longer on the US register under N613HA."
+  },
+  {
+   "tail": "4X-BHS",
+   "hex": "739255",
+   "model": "Sikorsky S-76C++",
+   "year": "",
+   "owner": "Hatzolah Air (Israel)",
+   "category": "helicopter",
+   "region": "Israel",
+   "color": "#f472b6",
+   "confidence": "high",
+   "source": "Israeli civil register (c/n 760818); multiple photos in Hatzolah Air titles on JetPhotos (2022–2026), including Megido and Be'er Sheva"
+  },
+  {
+   "tail": "4X-BEX",
+   "hex": "73925f",
+   "model": "Sikorsky S-76C-2",
+   "year": "",
+   "owner": "Hatzolah Air (Israel)",
+   "category": "helicopter",
+   "region": "Israel",
+   "color": "#22d3ee",
+   "confidence": "high",
+   "source": "Israeli civil register (c/n 760803); photographed in Hatzolah Air titles on JetPhotos at Be'er Sheva (2024)"
+  },
+  {
+   "tail": "4X-BOB",
+   "hex": "739262",
+   "model": "Sikorsky S-76C+",
+   "year": "",
+   "owner": "Hatzolah Air (Israel)",
+   "category": "helicopter",
+   "region": "Israel",
+   "color": "#fb7185",
+   "confidence": "high",
+   "source": "Israeli civil register (c/n 760779); photographed in Hatzolah Air titles on JetPhotos at Be'er Sheva (4 Oct 2025); Mode S 739262 from Flightradar24"
+  },
+  {
+   "tail": "4X-BHT",
+   "hex": "739250",
+   "model": "Sikorsky S-76C++",
+   "year": "",
+   "owner": "Hatzolah Air (Israel)",
+   "category": "helicopter",
+   "region": "Israel",
+   "color": "#a3e635",
+   "confidence": "high",
+   "source": "Israeli civil register (c/n 760658); multiple photos in Hatzolah Air titles on JetPhotos (2023) at Be'er Sheva, Rosh Pina and Ben Gurion"
+  }
+ ]
+}
