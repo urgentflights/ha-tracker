@@ -1,1 +1,14 @@
-{"name":"HA Tracker – Hatzolah Air","short_name":"HA Tracker","start_url":"./","display":"standalone","background_color":"#0b1220","theme_color":"#0b1220","icons":[{"src":"icon-192.png","sizes":"192x192","type":"image/png"},{"src":"icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}]}
+{
+  "name": "HA Tracker – Hatzolah Air",
+  "short_name": "HA Tracker",
+  "description": "Live map of Hatzolah Air aircraft.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3f5f9",
+  "theme_color": "#0b1b33",
+  "icons": [
+    {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}

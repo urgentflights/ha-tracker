@@ -1,201 +1,405 @@
-/* HA Tracker – Hatzolah Air. Data: /api/fleet (tails) and /api/state (live + last-known). */
+/* HA Tracker – Hatzolah Air. Live positions from /api/fleet and /api/state. */
 (() => {
 const $ = s => document.querySelector(s);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const LS = k => 'hat.' + k;
-let fleet = {tails: []}, st = {planes: {}}, map, selected = null, mapReady = false, didFit = false;
-const off = new Set(JSON.parse(localStorage.getItem(LS('off')) || '[]'));
-$('#sort').value = localStorage.getItem(LS('sort')) || 'status';
-if ($('#showLow')) $('#showLow').checked = localStorage.getItem(LS('low')) === '1';
+const Countries = (() => { try { return new Intl.DisplayNames(['en'], {type: 'region'}); } catch { return null; } })();
 
-const fmtTime = t => {
-  const d = new Date(t * 1000), now = new Date();
-  const same = d.toDateString() === now.toDateString();
-  return same ? d.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})
-              : d.toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
+const PHASES = {
+  parked:  {label: 'Parked',        kind: 'ground'},
+  taxi:    {label: 'Taxiing',       kind: 'move'},
+  roll:    {label: 'Taking off',    kind: 'move'},
+  landed:  {label: 'Just landed',   kind: 'move'},
+  takeoff: {label: 'Just took off', kind: 'air'},
+  climb:   {label: 'Climbing',      kind: 'air'},
+  cruise:  {label: 'Cruising',      kind: 'air'},
+  descent: {label: 'Descending',    kind: 'air'},
+  landing: {label: 'Landing',       kind: 'air'},
+  hover:   {label: 'Hovering',      kind: 'air'},
+  range:   {label: 'Out of range',  kind: 'air'},
+  probable:{label: 'Landed',        kind: 'ground'},
+  lost:    {label: 'No signal',     kind: 'lost'},
+  unknown: {label: 'Live',          kind: 'lost'},
+  none:    {label: 'No data',       kind: 'lost'}
 };
-const ago = s => s < 90 ? 'just now' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? (s / 3600).toFixed(s < 36000 ? 1 : 0) + ' h ago' : Math.round(s / 86400) + ' d ago';
-const apName = a => a ? `${a.iata || a.code} · ${a.name}${a.city ? ', ' + a.city : ''}${a.country === 'US' ? ', ' + a.region : a.country ? ', ' + a.country : ''}` : null;
-const compass = d => d == null ? '' : ['N','NE','E','SE','S','SW','W','NW'][Math.round(d / 45) % 8];
-const isHeli = t => t.category === 'helicopter';
-const colorOf = t => t.color || '#38bdf8';
-const regions = () => [...new Set(fleet.tails.map(t => t.region).filter(Boolean))];
 
-function status(t) {
-  const p = st.planes[t.tail]; const now = st.now || Date.now() / 1000;
-  if (!p) return {kind: 'none', rank: 4, label: 'No data yet', line: 'Not heard on ADS-B since tracking started'};
-  const age = now - p.ts;
-  if (!p.onGround && age < 150) {
-    const alt = p.altFt != null ? (p.altFt >= 18000 ? 'FL' + Math.round(p.altFt / 100) : p.altFt.toLocaleString() + ' ft') : '—';
-    const vs = p.vsFpm > 500 ? ' ↑' : p.vsFpm < -500 ? ' ↓' : '';
-    return {kind: 'air', rank: 0, label: 'Airborne', p, age,
-      line: `${alt}${vs} · ${p.gsKt != null ? Math.round(p.gsKt) + ' kt' : '—'} · hdg ${p.track != null ? Math.round(p.track) + '° ' + compass(p.track) : '—'}${p.callsign && p.callsign !== t.tail ? ' · ' + p.callsign : ''}`,
-      where: p.near ? `near ${apName(p.near)} (${p.near.distNm} nm)` : null};
-  }
-  if (p.onGround) {
-    const ap = p.groundAirport && Math.abs(p.groundAirport.ts - p.ts) < 3600 ? p.groundAirport : p.near;
-    return {kind: age < 600 ? 'ground' : 'stale', rank: age < 600 ? 1 : 2, label: age < 600 ? 'On ground' : 'Parked', p, age,
-      line: ap ? apName(ap) : `${p.lat.toFixed(3)}, ${p.lon.toFixed(3)}`, where: null};
-  }
-  const la = p.lastAirport;
-  if (la && p.ts - la.ts < 900 && (p.altFt == null || p.altFt < 5000))
-    return {kind: 'stale', rank: 2, label: 'Likely landed', p, age, line: apName(la), where: 'signal lost on approach'};
-  return {kind: 'stale', rank: 3, label: 'Signal lost', p, age,
-    line: `last in flight${p.altFt != null ? ' at ' + p.altFt.toLocaleString() + ' ft' : ''}${p.near ? ' near ' + apName(p.near) : ''}`, where: 'out of receiver coverage, or landed where no receiver hears it'};
+function cityLine(p) {
+  if (!p) return null;
+  if (!p.country && p.city) return p.city;
+  if (!p.country) return null;
+  const country = {US: 'USA', GB: 'UK', AE: 'UAE'}[p.country] || Countries?.of(p.country) || p.country;
+  const state = ['US', 'CA', 'AU'].includes(p.country) ? p.region : null;
+  return [p.city, state, country].filter(Boolean).join(', ');
+}
+function airportCode(p) {
+  if (!p) return '';
+  const c = p.iata || p.code || '';
+  return c && !/-\d/.test(c) ? c : '';
+}
+function placeShort(p) {
+  if (!p) return null;
+  const name = p.city || p.name;
+  const code = airportCode(p);
+  return name ? name + (code ? ' (' + code + ')' : '') : (code || null);
+}
+function asPlace(p) {
+  if (!p || p.lat == null && p.code == null && !p.name) return null;
+  return {
+    name: p.name, city: p.city, region: p.region, country: p.country,
+    code: airportCode(p), iata: p.iata, distNm: p.distNm,
+    lat: p.lat, lon: p.lon
+  };
 }
 
-function visibleTails() {
-  const q = $('#q').value.trim().toLowerCase(), low = $('#showLow')?.checked;
-  return fleet.tails.filter(t => !off.has(t.region || '') && (low || t.confidence !== 'low')).map(t => ({t, s: status(t)}))
-    .filter(({t, s}) => !q || [t.tail, t.model, t.faaModel, t.owner, t.region, s.line, s.where].join(' ').toLowerCase().includes(q));
+function phaseOf(o, heli) {
+  const alt = o.altFt, vs = o.vsFpm, gs = o.gsKt, has = Number.isFinite;
+  if (o.onGround === true) {
+    if (!(gs >= 3)) return 'parked';
+    if (gs < 40) return 'taxi';
+    return 'roll';
+  }
+  if (o.onGround !== false) return 'unknown';
+  if (heli && has(gs) && gs < 25 && has(alt) && alt < 3000) return 'hover';
+  if (has(vs) && vs >= 300 && has(alt) && alt < 5000) return 'takeoff';
+  if (has(vs) && vs <= -300 && has(alt) && alt < 5000) return 'landing';
+  if (has(vs) && vs >= 500) return 'climb';
+  if (has(vs) && vs <= -500) return 'descent';
+  return 'cruise';
 }
 
-function renderChips() {
+const num = n => Math.round(n).toLocaleString('en-US');
+function ago(t) {
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  return s < 60 ? 'just now' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' hr ago' : Math.round(s / 86400) + (Math.round(s / 86400) === 1 ? ' day ago' : ' days ago');
+}
+
+let fleet = {tails: []}, st = {planes: {}}, liveState = 'off', liveFailed = false, liveBusy = false;
+let openId = null, query = '', sortBy = 'status';
+const offRegions = new Set(JSON.parse(localStorage.getItem(LS('off')) || '[]'));
+try { const v = localStorage.getItem(LS('sort')); if (v) sortBy = v; } catch {}
+
+function isHeli(t) { return t.category === 'helicopter' || /helicopter|rotorcraft/i.test(t.model || ''); }
+
+function enrich(t) {
+  const p = st.planes[t.tail], now = Date.now();
+  const heli = isHeli(t);
+  const base = {
+    id: t.tail, tail: t.tail, name: t.tail, short: t.tail, model: t.model, year: t.year,
+    owner: t.owner, region: t.region || '', faaModel: t.faaModel, source: t.source,
+    note: t.note, color: t.color, category: t.category, heli, confidence: t.confidence
+  };
+  if (!p || !Number.isFinite(p.lat) || !Number.isFinite(p.lon) || !Number.isFinite(p.ts)) {
+    return {...base, phase: 'none', phaseLabel: PHASES.none.label, kind: 'lost', live: false, lastAt: 0};
+  }
+  const observedAt = p.ts * 1000;
+  const age = now - observedAt;
+  const live = age <= 150000 && (p.onGround === true ? age <= 600000 : true) || (p.onGround === false && age <= 150000);
+  const remembered = !live && age <= 14 * 86400e3;
+  const ground = asPlace(p.groundAirport);
+  const lastAp = asPlace(p.lastAirport);
+  const near = asPlace(p.near);
+  const from = asPlace(p.from);
+  const trail = Array.isArray(p.trail) ? p.trail.filter(x => x && x.length >= 2).map(x => [x[1], x[0]]) : [];
+  const obs = {onGround: p.onGround, altFt: p.altFt, vsFpm: p.vsFpm, gsKt: p.gsKt};
+
+  let phase, place, ahead = null, trailOpen = false;
+  if (live) {
+    phase = phaseOf(obs, heli);
+    if (p.onGround === true) place = (ground && Math.abs((ground.ts || p.ts) - p.ts) < 3600) ? ground : near;
+    else {
+      place = near;
+    }
+    trailOpen = p.onGround === false && trail.length > 1;
+  } else if (remembered) {
+    if (p.onGround === true) {
+      phase = age < 600000 ? (phaseOf(obs, heli) === 'parked' ? 'parked' : phaseOf(obs, heli)) : 'parked';
+      place = ground || near;
+    } else {
+      const high = (Number.isFinite(p.altFt) ? p.altFt >= 8000 : (p.gsKt || 0) >= 250);
+      const probable = (!!lastAp && Number.isFinite(p.altFt) && p.altFt < 1000) || (!high && lastAp);
+      phase = high ? 'range' : probable ? 'probable' : 'lost';
+      place = lastAp || near;
+    }
+  } else {
+    return {...base, phase: 'none', phaseLabel: PHASES.none.label, kind: 'lost', live: false, lastAt: observedAt};
+  }
+
+  const ph = PHASES[phase] || PHASES.none;
+  const city = cityLine(place || near);
+  return {
+    ...base, live, remembered, phase, phaseLabel: ph.label, kind: ph.kind,
+    latitude: p.lat, longitude: p.lon, observedAt, lastAt: observedAt,
+    track: p.track ?? null, speedKts: p.gsKt ?? null, altitudeFt: p.altFt ?? null, verticalFpm: p.vsFpm ?? null,
+    callsign: p.callsign || null, place, near, from, cityLine: city,
+    trail, trailOpen, ahead
+  };
+}
+
+function headline(a) {
+  const p = a.place, near = a.near;
+  switch (a.phase) {
+    case 'parked': case 'taxi': case 'roll': case 'landed':
+      return {where: p ? p.name : a.cityLine || 'On the ground', sub: p ? [airportCode(p), cityLine(p)].filter(Boolean).join(' · ') : ''};
+    case 'probable':
+      if (p) return {where: p.name, sub: [airportCode(p), cityLine(p)].filter(Boolean).join(' · ')};
+      return {where: 'Near ' + (a.cityLine || 'its last position'), sub: ''};
+    case 'range':
+      return {where: near ? 'Last seen near ' + cityLine(near) : 'Over open water', sub: 'Out of radar range — normal over oceans or sparse coverage'};
+    case 'lost':
+      return {where: near ? 'Signal lost near ' + cityLine(near) : 'Signal lost', sub: ''};
+    case 'none':
+      return {where: liveState === 'error' ? 'Live data unavailable' : 'Not seen yet', sub: liveState === 'error' ? 'Retrying automatically' : 'We’ll show it the moment it flies'};
+    default:
+      return {where: near ? ((near.distNm > 25 ? 'Over ' : 'Near ') + cityLine(near)) : 'Over open water', sub: ''};
+  }
+}
+
+function flyingMeta(a) {
+  const bits = [];
+  if (Number.isFinite(a.altitudeFt)) bits.push(num(a.altitudeFt) + ' ft');
+  if (Number.isFinite(a.speedKts)) bits.push(num(a.speedKts) + ' kts');
+  if (Number.isFinite(a.verticalFpm) && Math.abs(a.verticalFpm) >= 300) bits.push((a.verticalFpm > 0 ? '↑ ' : '↓ ') + num(Math.abs(a.verticalFpm)) + ' ft/min');
+  return bits.join(' · ');
+}
+
+function detailLine(a) {
+  if (a.kind === 'air' && a.live) return 'Live · updated ' + ago(a.observedAt);
+  if (a.phase === 'range') return `Last seen ${ago(a.observedAt)}${Number.isFinite(a.altitudeFt) ? ' at ' + num(a.altitudeFt) + ' ft' : ''}`;
+  if (a.phase === 'taxi' && Number.isFinite(a.speedKts)) return `Taxiing at ${num(a.speedKts)} kts`;
+  if (a.phase === 'roll' && Number.isFinite(a.speedKts)) return `Speeding down the runway · ${num(a.speedKts)} kts`;
+  if (a.remembered) return 'Seen ' + ago(a.observedAt);
+  return '';
+}
+
+function routeBar(a) {
+  if (a.kind !== 'air' && a.phase !== 'range') return '';
+  const from = a.from, to = a.ahead, start = a.trail?.[0];
+  let pct = 60;
+  if (to && start && Number.isFinite(to.distNm)) {
+    const d1 = Math.hypot(a.latitude - start[1], (a.longitude - start[0]) * Math.cos(a.latitude * Math.PI / 180)) * 60;
+    pct = Math.max(8, Math.min(92, 100 * d1 / (d1 + to.distNm)));
+  }
+  const code = w => w ? esc(airportCode(w) || w.city || w.name || '?') : '?';
+  if (!from && !to) return '';
+  const plane = window.HAMap?.icons?.[a.heli ? 'heli' : 'plane'] || '✈';
+  return `<span class="route" aria-label="Route"><b>${from ? code(from) : '?'}</b><span class="rt"><span class="rt-done" style="width:${pct}%"></span><span class="rt-plane" style="left:${pct}%">${plane}</span></span><b class="${to ? '' : 'q'}">${to ? code(to) : '?'}</b></span>`;
+}
+
+function details(a) {
+  const model = a.model || a.faaModel || 'Aircraft';
+  return `<div class="more">
+    <h3 class="sec">Aircraft</h3>
+    <div class="facts">
+      <div><small>Type</small><b>${esc(model)}${a.heli ? ' · Helicopter' : ''}</b></div>
+      <div><small>Year</small><b>${esc(a.year || '—')}</b></div>
+      <div><small>Owner</small><b>${esc(a.owner || '—')}</b></div>
+      <div><small>Based</small><b>${esc(a.region || '—')}</b></div>
+    </div>
+    ${a.note ? `<p class="note">${esc(a.note)}</p>` : ''}
+    ${a.source ? `<p class="fine">${esc(a.source)}</p>` : ''}
+    <div class="links"><button class="share-btn" data-share="${esc(a.id)}" type="button">Share ↗</button></div>
+  </div>`;
+}
+
+function summary(list) {
+  const air = list.filter(a => a.kind === 'air').length, move = list.filter(a => a.kind === 'move').length;
+  const chips = [];
+  if (air) chips.push(`<span class="chip air"><i></i>${air} in the air</span>`);
+  if (move) chips.push(`<span class="chip move"><i></i>${move} on the runway</span>`);
+  const heli = list.filter(a => a.heli).length;
+  if (heli) chips.push(`<span class="chip heli">${heli} helicopter${heli === 1 ? '' : 's'}</span>`);
+  if (!air && !move) chips.push(`<span class="chip">${liveState === 'ok' || liveState === 'cached' ? 'All quiet' : 'Connecting…'}</span>`);
+  chips.push(`<span class="chip">${list.length} tails</span>`);
+  return chips.join('');
+}
+
+function regions() { return [...new Set(fleet.tails.map(t => t.region).filter(Boolean))]; }
+
+function renderGroups() {
   const regs = regions();
-  if (regs.length < 2) { $('#chips').innerHTML = ''; return; }
-  $('#chips').innerHTML = regs.map(r => {
-    const n = fleet.tails.filter(t => t.region === r && ($('#showLow')?.checked || t.confidence !== 'low'));
-    const air = n.filter(t => status(t).kind === 'air').length;
-    return `<span class="chip ${off.has(r) ? 'off' : ''}" data-region="${r}">${r} <b>${n.length}</b>${air ? ` <span style="color:#6ee7b7">${air} up</span>` : ''}</span>`;
-  }).join('') + `<span class="chip" data-region="__all">All</span>`;
-}
-$('#chips').addEventListener('click', e => {
-  const c = e.target.closest('.chip'); if (!c) return; const id = c.dataset.region;
-  if (id === '__all') off.clear();
-  else off.has(id) ? off.delete(id) : off.add(id);
-  localStorage.setItem(LS('off'), JSON.stringify([...off])); render();
-});
-
-function renderCards(list) {
-  const sort = $('#sort').value;
-  list.sort((a, b) => sort === 'tail' ? a.t.tail.localeCompare(b.t.tail)
-    : sort === 'seen' ? (b.s.p?.ts || 0) - (a.s.p?.ts || 0)
-    : a.s.rank - b.s.rank || (b.s.p?.ts || 0) - (a.s.p?.ts || 0) || a.t.tail.localeCompare(b.t.tail));
-  $('#cards').innerHTML = list.map(({t, s}) => {
-    const seen = s.p ? `${s.kind === 'air' ? 'Updated' : 'Last seen'} ${fmtTime(s.p.ts)} (${ago(s.age)})` : '';
-    const kindBadge = isHeli(t) ? '<span class="kind heli" title="Helicopter / rotorcraft">HELI</span>' : '';
-    const confBadge = t.confidence && t.confidence !== 'high' ? `<span class="conf ${t.confidence}" title="${(t.source || '').replace(/"/g, '')}">${t.confidence}</span>` : '';
-    return `<div class="card ${selected === t.tail ? 'sel' : ''}" data-tail="${t.tail}" style="border-left-color:${colorOf(t)}">
-      <div class="top"><span class="tail">${t.tail}${kindBadge}${confBadge}</span><span class="op">${t.owner || ''}</span></div>
-      <div class="model">${t.model || ''}${t.year ? ' · ' + t.year : ''}${t.region ? ' · ' + t.region : ''}</div>
-      <div class="status"><span class="badge ${s.kind}">${s.label}</span>${s.line || ''}</div>
-      ${s.where ? `<div class="meta">${s.where}</div>` : ''}
-      ${seen ? `<div class="meta">${seen}</div>` : ''}
-      ${t.note ? `<div class="note">${t.note}</div>` : ''}
-    </div>`;
-  }).join('') || '<p class="small" style="padding:12px">No tails match.</p>';
-}
-$('#cards').addEventListener('click', e => {
-  const c = e.target.closest('.card'); if (!c) return; select(c.dataset.tail, true);
-});
-function select(tail, fly) {
-  selected = tail; render();
-  const p = st.planes[tail];
-  if (fly && p && map) { map.flyTo({center: [p.lon, p.lat], zoom: Math.max(map.getZoom(), 7)}); if (document.body.classList.contains('listonly')) document.body.classList.remove('listonly'); }
-  if (!p) return;
-  document.querySelector(`.card[data-tail="${tail}"]`)?.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+  const box = $('#groups');
+  if (regs.length < 2) { box.innerHTML = ''; box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = regs.map(r => {
+    const n = fleet.tails.filter(t => t.region === r).length;
+    const on = !offRegions.has(r);
+    return `<label class="tg"><span><b>Show ${esc(r)}</b><small>${n} aircraft</small></span><input type="checkbox" role="switch" data-region="${esc(r)}" ${on ? 'checked' : ''}><i class="sw"></i></label>`;
+  }).join('');
 }
 
-function geo(list) {
-  const pts = [], trails = [];
-  for (const {t, s} of list) {
-    const p = s.p; if (!p) continue;
-    pts.push({type: 'Feature', geometry: {type: 'Point', coordinates: [p.lon, p.lat]},
-      properties: {tail: t.tail, color: colorOf(t), rot: p.track || 0, air: s.kind === 'air' ? 1 : 0, stale: s.kind === 'stale' ? 1 : 0, sel: selected === t.tail ? 1 : 0, icon: isHeli(t) ? 'heli' : 'plane'}});
-    if (s.kind === 'air' && p.trail?.length > 1)
-      trails.push({type: 'Feature', geometry: {type: 'LineString', coordinates: p.trail.map(x => [x[1], x[0]]).concat([[p.lon, p.lat]])}, properties: {color: colorOf(t)}});
-  }
-  return {pts: {type: 'FeatureCollection', features: pts}, trails: {type: 'FeatureCollection', features: trails}};
-}
-function fitIfNeeded(list) {
-  if (didFit || !mapReady || !map) return;
-  const pts = list.map(x => x.s.p).filter(Boolean);
-  if (!pts.length) return;
-  didFit = true;
-  if (pts.length === 1) { map.jumpTo({center: [pts[0].lon, pts[0].lat], zoom: 6}); return; }
-  const b = new maplibregl.LngLatBounds();
-  pts.forEach(p => b.extend([p.lon, p.lat]));
-  map.fitBounds(b, {padding: 60, maxZoom: 6, duration: 0});
-}
-function renderMap(list) {
-  if (!mapReady) return; const g = geo(list);
-  map.getSource('planes').setData(g.pts); map.getSource('trails').setData(g.trails);
-  fitIfNeeded(list);
-}
-
-function renderSummary(list) {
-  const air = list.filter(x => x.s.kind === 'air').length, gnd = list.filter(x => x.s.kind !== 'air' && x.s.p).length;
-  $('#summary').innerHTML = `<b style="color:#6ee7b7">${air}</b> flying · ${gnd} on ground/last seen · ${list.length} tails`;
-  const lp = st.lastPoll ? `Live data via ${st.source || '—'} (ADS-B, unfiltered community feed), polled every ${st.pollSeconds}s; last poll ${fmtTime(st.lastPoll)}.` : '';
-  $('#foot').innerHTML = `${lp}${st.error ? ' <span style="color:#fbbf24">Feed issue: ' + st.error + '</span>' : ''}<br>Times shown in your local time zone (${Intl.DateTimeFormat().resolvedOptions().timeZone}). Positions come from public ADS-B receivers, so aircraft parked or flying outside coverage show their last known spot. US type, year and owner are from the FAA registry; Israeli tails are from the civil register and photos in Hatzolah Air titles.`;
+function visible() {
+  const q = query.trim().toLowerCase();
+  return fleet.tails.map(enrich)
+    .filter(a => !offRegions.has(a.region || '') && (!q || [a.tail, a.model, a.faaModel, a.owner, a.region, a.cityLine, a.phaseLabel].join(' ').toLowerCase().includes(q)));
 }
 
 function render() {
-  if ($('#lowWrap')) $('#lowWrap').hidden = !fleet.tails.some(t => t.confidence === 'low');
-  renderChips(); const list = visibleTails(); renderCards(list); renderMap(list); renderSummary(list);
-}
-['input', 'change'].forEach(ev => { $('#q').addEventListener(ev, render); });
-$('#sort').addEventListener('change', () => { localStorage.setItem(LS('sort'), $('#sort').value); render(); });
-$('#showLow')?.addEventListener('change', () => { localStorage.setItem(LS('low'), $('#showLow').checked ? '1' : '0'); render(); });
-$('#toggle').addEventListener('click', () => { document.body.classList.toggle('listonly'); $('#toggle').textContent = document.body.classList.contains('listonly') ? 'Map' : 'List'; map?.resize(); });
-
-function planeIcon() {
-  const s = 64, c = document.createElement('canvas'); c.width = c.height = s; const x = c.getContext('2d');
-  x.fillStyle = '#fff'; x.beginPath();
-  const P = [[32,4],[36,10],[36,26],[60,40],[60,45],[36,38],[35,52],[44,58],[44,62],[32,59],[20,62],[20,58],[29,52],[28,38],[4,45],[4,40],[28,26],[28,10]];
-  P.forEach(([a, b], i) => i ? x.lineTo(a, b) : x.moveTo(a, b)); x.closePath(); x.fill();
-  return x.getImageData(0, 0, s, s);
-}
-function heliIcon() {
-  const s = 64, c = document.createElement('canvas'); c.width = c.height = s; const x = c.getContext('2d');
-  x.fillStyle = '#fff';
-  x.fillRect(6, 21.5, 52, 5);
-  x.fillRect(29.5, 6, 5, 36);
-  x.beginPath(); x.arc(32, 24, 4.5, 0, Math.PI * 2); x.fill();
-  x.beginPath();
-  x.moveTo(32, 14);
-  x.bezierCurveTo(44, 16, 44, 34, 36, 42);
-  x.lineTo(28, 42);
-  x.bezierCurveTo(20, 34, 20, 16, 32, 14);
-  x.fill();
-  x.fillRect(30, 40, 4, 18);
-  x.fillRect(26, 52, 6, 8);
-  x.fillRect(34, 53, 14, 4);
-  x.fillRect(46, 50, 3, 10);
-  return x.getImageData(0, 0, s, s);
-}
-function initMap() {
-  map = new maplibregl.Map({container: 'map', style: 'https://tiles.openfreemap.org/styles/liberty', center: [10, 32], zoom: 2.2, attributionControl: {compact: true}});
-  map.addControl(new maplibregl.NavigationControl({showCompass: false}), 'top-left');
-  map.on('load', () => {
-    map.addImage('plane', planeIcon(), {sdf: true});
-    map.addImage('heli', heliIcon(), {sdf: true});
-    map.addSource('planes', {type: 'geojson', data: {type: 'FeatureCollection', features: []}});
-    map.addSource('trails', {type: 'geojson', data: {type: 'FeatureCollection', features: []}});
-    map.addLayer({id: 'trails', type: 'line', source: 'trails', paint: {'line-color': ['get', 'color'], 'line-width': 2, 'line-opacity': .7}});
-    map.addLayer({id: 'ground', type: 'circle', source: 'planes', filter: ['==', ['get', 'air'], 0],
-      paint: {'circle-radius': ['case', ['==', ['get', 'sel'], 1], 9, 6], 'circle-color': ['get', 'color'], 'circle-opacity': ['case', ['==', ['get', 'stale'], 1], .6, 1], 'circle-stroke-color': '#fff', 'circle-stroke-width': ['case', ['==', ['get', 'sel'], 1], 3, 1.5]}});
-    map.addLayer({id: 'air', type: 'symbol', source: 'planes', filter: ['==', ['get', 'air'], 1],
-      layout: {'icon-image': ['get', 'icon'], 'icon-size': ['case', ['==', ['get', 'sel'], 1], .65, .45], 'icon-rotate': ['get', 'rot'], 'icon-rotation-alignment': 'map', 'icon-allow-overlap': true},
-      paint: {'icon-color': ['get', 'color'], 'icon-halo-color': '#fff', 'icon-halo-width': 1.5}});
-    map.addLayer({id: 'labels', type: 'symbol', source: 'planes',
-      layout: {'text-field': ['get', 'tail'], 'text-size': 11, 'text-offset': [0, 1.3], 'text-anchor': 'top', 'text-allow-overlap': false, 'text-font': ['Noto Sans Bold']},
-      paint: {'text-color': '#111', 'text-halo-color': '#fff', 'text-halo-width': 1.5}});
-    for (const l of ['ground', 'air']) {
-      map.on('click', l, e => select(e.features[0].properties.tail, false));
-      map.on('mouseenter', l, () => map.getCanvas().style.cursor = 'pointer');
-      map.on('mouseleave', l, () => map.getCanvas().style.cursor = '');
-    }
-    mapReady = true; render();
+  renderGroups();
+  const list = visible();
+  $('#summary').innerHTML = summary(list);
+  const icons = window.HAMap?.icons || {};
+  const shown = list.slice().sort((a, b) => {
+    if (sortBy === 'tail') return a.tail.localeCompare(b.tail);
+    if (sortBy === 'seen') return (b.observedAt || 0) - (a.observedAt || 0);
+    const rank = {air: 0, move: 1, ground: 2, lost: 3};
+    return (rank[a.kind] ?? 4) - (rank[b.kind] ?? 4) || (b.observedAt || 0) - (a.observedAt || 0) || a.tail.localeCompare(b.tail);
   });
+  $('#sort').value = sortBy;
+  $('#list').innerHTML = shown.length ? shown.map(a => {
+    const h = headline(a);
+    const model = (a.model || '') + (a.year ? ' · ' + a.year : '') + (a.heli ? '' : '');
+    const modelLabel = a.heli ? (a.model ? a.model.replace(/ · Helicopter$/i, '') + ' helicopter' : 'Helicopter') : (a.model || 'Aircraft');
+    const meta = a.kind === 'air' && a.live ? flyingMeta(a) : '';
+    return `<li class="card k-${a.kind} ph-${a.phase}${a.id === openId ? ' open' : ''}">
+    <button class="card-main" data-id="${esc(a.id)}" aria-expanded="${a.id === openId}">
+      <span class="row1">
+        <span class="ava${a.heli ? ' heli' : ''}" style="--trk:${Number.isFinite(a.track) && a.kind !== 'ground' ? a.track : 0}deg">${a.heli ? icons.heli || '' : icons.plane || ''}</span>
+        <span class="who"><span class="nm">${esc(a.tail)}${a.heli ? '<span class="kind-tag">HELI</span>' : ''}</span><span class="sub">${esc(modelLabel)}${a.year ? ' · ' + esc(a.year) : ''}</span></span>
+      </span>
+      <span class="pillrow"><span class="pill"><i></i>${esc(a.phaseLabel)}</span></span>
+      <span class="where">${esc(h.where)}</span>
+      ${h.sub ? `<span class="meta">${esc(h.sub)}</span>` : ''}
+      ${routeBar(a)}
+      ${meta ? `<span class="meta stats">${esc(meta)}</span>` : ''}
+      ${detailLine(a) ? `<span class="meta">${esc(detailLine(a))}</span>` : ''}
+    </button>${a.id === openId ? details(a) : ''}</li>`;
+  }).join('') : `<li class="empty">${query ? 'No match.' : 'No aircraft to show.'}</li>`;
+  $('#status').textContent = liveFailed && liveState === 'ok' ? 'Reconnecting… showing the last known positions.' : '';
+  window.HAMap?.render(list, openId);
 }
 
-async function refresh() {
-  try { st = await (await fetch('api/state', {cache: 'no-store'})).json(); render(); $('#waking').classList.add('hide'); }
-  catch (e) { $('#summary').textContent = 'Offline — showing last data'; }
+function toast(text) {
+  const t = $('#toast'); t.textContent = text; t.hidden = false;
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.hidden = true, 4000);
 }
+function dialog(title, html, cls = '') {
+  const d = $('#dialog'); d.className = cls;
+  $('#dialog-title').textContent = title; $('#dialog-body').innerHTML = html; d.showModal();
+}
+
+function open(id) {
+  openId = openId === id ? null : id; render();
+  if (!openId) return window.HAMap?.fit();
+  window.HAMap?.select(openId);
+  document.querySelector(`[data-id="${CSS.escape(openId)}"]`)?.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+}
+
+async function sharePlane(id) {
+  const a = enrich(fleet.tails.find(t => t.tail === id) || {tail: id});
+  const h = headline(a);
+  const text = `${a.tail} — ${a.phaseLabel}: ${h.where}`;
+  const url = location.origin + location.pathname;
+  if (navigator.share) { try { await navigator.share({title: a.tail + ' · HA Tracker', text, url}); return; } catch { return; } }
+  try { await navigator.clipboard.writeText(text + ' · ' + url); toast('Copied link.'); } catch { toast(text); }
+}
+
+function about() {
+  const src = st.source ? ` Live data is currently coming from ${st.source}.` : '';
+  const poll = st.pollSeconds ? ` The server checks the feed every ${st.pollSeconds} seconds.` : '';
+  dialog('About the data', `<p>HA Tracker follows Hatzolah Air aircraft on a live map. Positions come from public, unfiltered ADS-B receiver networks.${poll} This page refreshes every 20 seconds.${src}</p>
+    <p>US type, year and owner are from the FAA aircraft registry. Israeli helicopters are identified from the civil register and photographs in Hatzolah Air titles.</p>
+    <p>A position is only a transponder report — it does not say who is on board or why the aircraft is flying. Planes parked or flying outside receiver coverage show their last known spot, or “Not seen yet” if they have not been heard since this tracker started.</p>
+    <p class="fine">Times are shown in your time zone (${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}).</p>`);
+}
+
+// ---------- Map visibility + install ----------
+let mapHidden = false;
+try { mapHidden = localStorage.getItem(LS('map')) === 'hidden'; } catch {}
+function setMap(hidden) {
+  mapHidden = hidden; $('.map-box').hidden = hidden;
+  $('#map-toggle').textContent = hidden ? '🗺️ Show map' : '🗺️ Hide map';
+  $('#map-toggle').setAttribute('aria-expanded', String(!hidden));
+  $('#map-btn').setAttribute('aria-pressed', String(!hidden));
+  try { localStorage.setItem(LS('map'), hidden ? 'hidden' : 'shown'); } catch {}
+  if (!hidden) requestAnimationFrame(() => window.HAMap && document.querySelector('#map') && window.dispatchEvent(new Event('resize')));
+}
+$('#map-toggle').addEventListener('click', () => setMap(!mapHidden));
+$('#map-btn').addEventListener('click', () => { setMap(!mapHidden); if (!mapHidden) window.scrollTo({top: 0, behavior: 'smooth'}); toast(mapHidden ? 'Map hidden' : 'Map shown'); });
+setMap(mapHidden);
+
+const standalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+const iOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+let installed = standalone();
+function cta() {
+  let hidden = false; try { hidden = (+localStorage.getItem(LS('cta-hide')) || 0) > Date.now(); } catch {}
+  const box = $('#cta'), app = standalone();
+  const inst = $('#menu [data-action="install"]'); if (inst) inst.hidden = app;
+  const offerInstall = !app && !installed;
+  if (hidden || !offerInstall) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `<span class="cta-ic">📲</span><span class="cta-tx"><b>Get the app</b><small>Add HA Tracker to your home screen</small></span><button class="cta-go" data-cta="install" type="button">Install</button><button class="cta-x" data-cta="hide" type="button" aria-label="Not now">×</button>`;
+}
+function iphoneSteps() {
+  dialog('Add to Home Screen', `<ol class="big-steps">
+    <li><span>Tap the <b class="kbd">Share</b> button in Safari</span></li>
+    <li><span>Choose <b>Add to Home Screen</b></span></li>
+    <li><span>Open <b>HA Tracker</b> from your Home Screen</span></li>
+  </ol>`);
+}
+const waitForInstall = ms => window.haInstall ? Promise.resolve(window.haInstall)
+  : new Promise(r => { const t = setTimeout(() => r(window.haInstall || null), ms); addEventListener('ha-install', () => { clearTimeout(t); r(window.haInstall); }, {once: true}); });
+async function ctaAction(what) {
+  if (what === 'hide') { try { localStorage.setItem(LS('cta-hide'), String(Date.now() + 7 * 86400e3)); } catch {} return cta(); }
+  if (iOS) return iphoneSteps();
+  const go = $('#cta .cta-go'); if (go) go.textContent = 'One sec…';
+  const evt = await waitForInstall(2500);
+  if (evt) {
+    window.haInstall = null;
+    evt.prompt();
+    const {outcome} = await evt.userChoice.catch(() => ({}));
+    if (outcome === 'accepted') { installed = true; toast('Installing — HA Tracker will be on your home screen.'); }
+    return cta();
+  }
+  cta();
+  if (installed) return toast('Already installed — open HA Tracker from your home screen.');
+  dialog('Install the app', `<div class="menu-hint"><span>Tap</span><b class="kbd big">⋮</b><span>at the top-right of Chrome:</span></div>
+    <ul class="steps"><li>See <b>📲 Install app</b>? Tap it — done.</li>
+    <li>See <b>Open app</b> instead? It’s already installed — look for <b>HA Tracker</b> on your home screen or app drawer.</li></ul>`);
+}
+addEventListener('ha-install', cta);
+addEventListener('appinstalled', () => { installed = true; window.haInstall = null; cta(); });
+
+document.addEventListener('click', e => {
+  const t = e.target;
+  const ctaBtn = t.closest('[data-cta]'); if (ctaBtn) return ctaAction(ctaBtn.dataset.cta);
+  const share = t.closest('[data-share]'); if (share) return sharePlane(share.dataset.share);
+  const card = t.closest('[data-id]'); if (card) return open(card.dataset.id);
+  if (t.closest('#menu-btn')) { const m = $('#menu'); m.hidden = !m.hidden; $('#menu-btn').setAttribute('aria-expanded', String(!m.hidden)); return; }
+  const act = t.closest('[data-action]');
+  if (!t.closest('#menu')) $('#menu').hidden = true;
+  if (act) { $('#menu').hidden = true; ({install: () => ctaAction('install'), about})[act.dataset.action]?.(); }
+});
+$('#groups').addEventListener('change', e => {
+  const inp = e.target.closest('[data-region]'); if (!inp) return;
+  if (inp.checked) offRegions.delete(inp.dataset.region); else offRegions.add(inp.dataset.region);
+  try { localStorage.setItem(LS('off'), JSON.stringify([...offRegions])); } catch {}
+  render();
+});
+$('#sort').addEventListener('change', e => { sortBy = e.target.value; try { localStorage.setItem(LS('sort'), sortBy); } catch {} render(); });
+$('#search').addEventListener('input', e => { query = e.target.value; render(); });
+
+async function refreshLive() {
+  if (document.hidden || liveBusy) return;
+  liveBusy = true;
+  try {
+    const r = await fetch('api/state', {cache: 'no-store', signal: AbortSignal.timeout(15000)});
+    if (!r.ok) throw new Error();
+    st = await r.json();
+    liveState = 'ok'; liveFailed = false;
+  } catch { liveFailed = true; if (liveState === 'off') liveState = 'error'; }
+  finally { liveBusy = false; render(); }
+}
+
 async function boot() {
-  for (let i = 0; ; i++) { try { fleet = await (await fetch('api/fleet', {cache: 'no-store'})).json(); break; } catch (e) { if (i > 30) throw e; await new Promise(r => setTimeout(r, 3000)); } }
-  initMap(); await refresh(); setInterval(refresh, 15000);
+  for (let i = 0; ; i++) {
+    try { fleet = await (await fetch('api/fleet', {cache: 'no-store'})).json(); break; }
+    catch (e) { if (i > 30) throw e; await new Promise(r => setTimeout(r, 3000)); }
+  }
+  window.HAMap?.init(id => open(id));
+  cta(); render(); await refreshLive();
+  setInterval(refreshLive, 20000);
+  setInterval(() => { if (!document.hidden) render(); }, 30000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLive(); });
   setInterval(async () => { try { fleet = await (await fetch('api/fleet', {cache: 'no-store'})).json(); } catch {} }, 300000);
 }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

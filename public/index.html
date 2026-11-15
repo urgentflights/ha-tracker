@@ -1,45 +1,70 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1b33">
+<meta name="description" content="Live map of Hatzolah Air aircraft — positions from public ADS-B.">
 <title>HA Tracker – Hatzolah Air</title>
-<meta name="theme-color" content="#0b1220">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta property="og:title" content="HA Tracker – Hatzolah Air">
+<meta property="og:description" content="Live positions of Hatzolah Air aircraft.">
+<meta property="og:type" content="website">
+<script>addEventListener('beforeinstallprompt',function(e){e.preventDefault();window.haInstall=e;dispatchEvent(new Event('ha-install'));});</script>
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="icon-192.png">
-<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="HA Tracker">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+<link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
 <link rel="stylesheet" href="vendor/maplibre-gl.css">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="styles.css?v=3">
 <script src="vendor/maplibre-gl.js" defer></script>
-<script src="app.js" defer></script>
+<script src="map.js?v=3" defer></script>
+<script src="app.js?v=3" defer></script>
 </head>
 <body>
-<header>
-  <div class="brand"><span class="logo">HA</span> Tracker <span class="sub">– Hatzolah Air</span></div>
-  <div class="summary" id="summary">Loading…</div>
-</header>
-<main>
-  <section id="map"></section>
-  <aside id="panel">
-    <div class="controls">
-      <div class="chips" id="chips"></div>
-      <div class="row">
-        <input id="q" type="search" placeholder="Search tail, model, owner, airport…">
-        <select id="sort">
-          <option value="status">Sort: flying first</option>
-          <option value="tail">Sort: tail</option>
-          <option value="seen">Sort: last seen</option>
-        </select>
-      </div>
-      <label class="small" id="lowWrap" hidden><input type="checkbox" id="showLow"> Show unconfirmed tails</label>
+<header class="bar">
+  <div class="brand"><img src="icons/icon-192.png" alt="" width="32" height="32"><span>HA Tracker</span><small class="app-sub">Hatzolah Air</small></div>
+  <div class="actions">
+    <button id="map-btn" class="icon-btn" aria-pressed="true" aria-label="Show or hide the map" title="Show or hide the map">🗺️</button>
+    <button id="menu-btn" class="icon-btn" aria-haspopup="true" aria-expanded="false" aria-label="Menu">⋯</button>
+    <div id="menu" class="menu" hidden>
+      <button data-action="install">Install the app</button>
+      <button data-action="about">About the data</button>
     </div>
-    <div id="cards"></div>
-    <footer class="small" id="foot"></footer>
-  </aside>
+  </div>
+</header>
+
+<main>
+  <div id="cta" class="cta" hidden></div>
+  <div id="summary" class="summary" aria-live="polite">Loading…</div>
+  <button id="map-toggle" class="map-toggle" type="button" aria-expanded="true">🗺️ Hide map</button>
+  <div class="map-box"><div id="map" aria-label="Map of Hatzolah Air aircraft"></div></div>
+  <div class="tools">
+    <label class="sortbox">Sort
+      <select id="sort" aria-label="Sort aircraft">
+        <option value="status">Flying first</option>
+        <option value="tail">Tail</option>
+        <option value="seen">Last seen</option>
+      </select>
+    </label>
+    <input id="search" class="search" type="search" placeholder="Search tails, models or cities" aria-label="Search">
+  </div>
+  <div id="groups" class="toggles groups"></div>
+  <ul id="list" class="list"></ul>
+  <p id="status" class="status" role="status"></p>
+  <p class="foot">Live positions · times in your time zone · a position doesn’t show who is on board.</p>
 </main>
-<div id="waking" class="waking"><div><div class="spin"></div><b>Loading live positions…</b><br><span>If the app was idle, the free server takes up to a minute to wake up.</span></div></div>
-<button id="toggle" class="toggle">List</button>
+<dialog id="dialog" aria-labelledby="dialog-title">
+  <form method="dialog" class="dialog-close"><button aria-label="Close">×</button></form>
+  <h2 id="dialog-title"></h2>
+  <div id="dialog-body"></div>
+</dialog>
+<div id="toast" class="toast" role="status" hidden></div>
 </body>
 </html>

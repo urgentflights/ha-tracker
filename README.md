@@ -7,7 +7,7 @@ Live map + one card per tail for Hatzolah Air (also called HatzAir): the US jets
   (by ICAO hex) to `api.adsb.lol/v2/hex/…` (fallback `opendata.adsb.fi/api/v2/hex/…`), stores the latest
   and last-known position of each aircraft in `data/state.json`, works out the nearest airport
   (`data/airports.json`, from OurAirports), and serves `public/` plus `/api/fleet` and `/api/state`.
-- `public/` – static front end (MapLibre + OpenFreeMap tiles, PWA manifest + service worker).
+- `public/` – static front end (MapLibre + OpenFreeMap Positron tiles, light navy-header layout, PWA manifest + service worker).
 - `data/fleet.json` – **the tail list. Edit this to add aircraft.**
 
 US type, year, owner, and Mode S hex come from the FAA registry. Israeli registrations and hexes
