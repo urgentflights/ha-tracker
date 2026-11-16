@@ -4,7 +4,7 @@ Live map + one card per tail for Hatzolah Air (also called HatzAir): the US jets
 
 ## Layout
 - `server.py` – tiny stdlib-only Python backend. Every 30 s it makes ONE batched request for all tails
-  (by ICAO hex) to `api.adsb.lol/v2/hex/…` (fallback `opendata.adsb.fi/api/v2/hex/…`), stores the latest
+  (by ICAO hex and registration) to `api.adsb.lol` (fallback `opendata.adsb.fi`), stores the latest
   and last-known position of each aircraft in `data/state.json`, works out the nearest airport
   (`data/airports.json`, from OurAirports), and serves `public/` plus `/api/fleet` and `/api/state`.
 - `public/` – static front end (MapLibre + OpenFreeMap Positron tiles, light navy-header layout, PWA manifest + service worker).
@@ -34,4 +34,4 @@ Public repo `urgentflights/ha-tracker`, auto-deploys on every push to `main`.
 To add a tail: edit `data/fleet.json` on GitHub (pencil icon) and commit – Render redeploys in ~2 min.
 Free plan: sleeps after ~15 min without visitors (first load then takes ~30-60 s); disk is ephemeral, so
 last-known positions reset to the committed `data/state.json` snapshot on each restart/deploy and only
-accumulate while the service is awake.
+accumulate while the service is awake. A keepalive ping to `/api/health` every 10 minutes is intended to keep the poller running so flights are not missed while the site is idle. The workflow file is in `scripts/keepalive.yml` (add it under `.github/workflows/` if GitHub Actions is available).

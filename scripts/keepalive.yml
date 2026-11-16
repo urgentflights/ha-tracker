@@ -1,0 +1,18 @@
+# Ping the public app every 10 minutes so the Render free instance does not
+# spin down between visits. A sleeping poller cannot see live ADS-B.
+name: keepalive
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake HA Tracker
+        run: |
+          curl -fsS --retry 3 --retry-delay 10 --max-time 90 \
+            -A 'HATracker-keepalive/1.0' \
+            'https://ha-tracker.onrender.com/api/health' \
+            | head -c 400
+          echo

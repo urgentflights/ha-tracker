@@ -10,8 +10,16 @@ DATA = os.path.join(ROOT, 'data'); PUB = os.path.join(ROOT, 'public')
 FLEET = os.path.join(DATA, 'fleet.json'); STATE = os.path.join(DATA, 'state.json')
 POLL_S = int(os.environ.get('POLL_SECONDS', '30'))
 UA = 'HATracker/1.0 (small private fleet tracker, ~1 req/30s)'
-SOURCES = [('adsb.lol', 'https://api.adsb.lol/v2/hex/{}'),
-           ('adsb.fi', 'https://opendata.adsb.fi/api/v2/hex/{}')]
+# Query by ICAO hex and by registration so a Privacy ICAO Address (PIA)
+# still matches when the transponder reports our tail in `r` or `flight`.
+SOURCES = [
+    ('adsb.lol',
+     'https://api.adsb.lol/v2/hex/{}',
+     'https://api.adsb.lol/v2/reg/{}'),
+    ('adsb.fi',
+     'https://opendata.adsb.fi/api/v2/hex/{}',
+     'https://opendata.adsb.fi/api/v2/reg/{}'),
+]
 TRAIL_MAX = 400
 
 lock = threading.Lock()
@@ -19,7 +27,7 @@ fleet = {'tails': []}; fleet_mtime = 0
 state = {'planes': {}, 'lastPoll': None, 'lastSource': None, 'lastError': None}
 if os.path.exists(STATE):
     try: state.update(json.load(open(STATE)))
-    except Exception as e: print('state load failed', e)
+    except Exception as e: print('state load failed', e, flush=True)
 
 # ---- airports (OurAirports subset) ----
 AP = json.load(open(os.path.join(DATA, 'airports.json')))
@@ -61,54 +69,94 @@ def load_fleet():
         if not t.get('hex') and is_us_n(t['tail']):
             try:
                 h = faa_hex(t['tail'])
-                if h: t['hex'] = h; t.setdefault('source', 'FAA registry (auto)'); changed = True; print('hex', t['tail'], h)
-            except Exception as e: print('FAA lookup failed', t['tail'], e)
+                if h: t['hex'] = h; t.setdefault('source', 'FAA registry (auto)'); changed = True; print('hex', t['tail'], h, flush=True)
+            except Exception as e: print('FAA lookup failed', t['tail'], e, flush=True)
             time.sleep(1)
         if t.get('hex'): t['hex'] = t['hex'].lower()
     if changed:
         json.dump(f, open(FLEET, 'w'), indent=1)
     fleet = f; fleet_mtime = os.path.getmtime(FLEET)
 
-def fetch(hexes):
+def get_json(url):
+    req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept-Encoding': 'gzip'})
+    r = urllib.request.urlopen(req, timeout=20); b = r.read()
+    if r.headers.get('Content-Encoding') == 'gzip': b = gzip.decompress(b)
+    return json.loads(b)
+
+def fetch_list(tpl, keys):
+    out = []
+    if not keys: return out
+    for i in range(0, len(keys), 100):
+        j = get_json(tpl.format(','.join(keys[i:i+100])))
+        out += j.get('ac') or []
+        time.sleep(1.2)
+    return out
+
+def fetch(hexes, regs):
     errs = []
-    for name, tpl in SOURCES:
+    for name, hex_tpl, reg_tpl in SOURCES:
         try:
-            out = []
-            for i in range(0, len(hexes), 100):
-                req = urllib.request.Request(tpl.format(','.join(hexes[i:i+100])), headers={'User-Agent': UA, 'Accept-Encoding': 'gzip'})
-                r = urllib.request.urlopen(req, timeout=20); b = r.read()
-                if r.headers.get('Content-Encoding') == 'gzip': b = gzip.decompress(b)
-                j = json.loads(b); out += j.get('ac') or []
-                time.sleep(1.2)
-            return name, out, None
-        except Exception as e: errs.append(f'{name}: {e}')
+            out = fetch_list(hex_tpl, hexes)
+            try:
+                out += fetch_list(reg_tpl, regs)
+            except Exception as e:
+                errs.append(f'{name} reg: {e}')
+            return name, out, ('; '.join(errs) or None)
+        except Exception as e:
+            errs.append(f'{name}: {e}')
     return None, [], '; '.join(errs)
 
 def num(v): return v if isinstance(v, (int, float)) else None
 
+def ident(a):
+    return ((a.get('r') or '') + ' ' + (a.get('flight') or '')).upper().replace(' ', '')
+
+def match_ac(a, by_hex, by_reg):
+    h = (a.get('hex') or '').lower().lstrip('~')
+    if h and h in by_hex: return by_hex[h]
+    r = (a.get('r') or '').upper().replace(' ', '')
+    if r and r in by_reg: return by_reg[r]
+    f = (a.get('flight') or '').upper().replace(' ', '')
+    if f and f in by_reg: return by_reg[f]
+    return None
+
+def save_state():
+    tmp = STATE + '.tmp'
+    json.dump(state, open(tmp, 'w'))
+    os.replace(tmp, STATE)
+
 def poll_once():
     load_fleet()
-    tails = {t['hex']: t for t in fleet['tails'] if t.get('hex')}
-    src, acs, err = fetch(sorted(tails))
+    by_hex = {t['hex']: t for t in fleet['tails'] if t.get('hex')}
+    by_reg = {t['tail'].upper(): t for t in fleet['tails']}
+    hexes = sorted(by_hex)
+    regs = sorted(by_reg)
+    src, acs, err = fetch(hexes, regs)
     now = time.time()
     with lock:
         state['lastPoll'] = now; state['lastSource'] = src; state['lastError'] = err
-        if src is None: return
+        if src is None:
+            print(f'poll failed {err}', flush=True)
+            save_state()
+            return
         seen = set()
         for a in acs:
-            h = (a.get('hex') or '').lower().lstrip('~')
-            if h not in tails or a.get('lat') is None: continue
-            seen.add(h)
+            if a.get('lat') is None: continue
+            t = match_ac(a, by_hex, by_reg)
+            if not t: continue
+            h = t.get('hex') or (a.get('hex') or '').lower().lstrip('~')
+            seen.add(t['tail'])
             ts = now - (num(a.get('seen_pos')) or 0)
             onground = a.get('alt_baro') == 'ground'
             alt = None if onground else num(a.get('alt_baro'))
             if alt is None and not onground: alt = num(a.get('alt_geom'))
             p = state['planes'].get(h) or {}
-            prev_air = p.get('onGround') is False
-            p.update({'hex': h, 'tail': tails[h]['tail'], 'lat': a['lat'], 'lon': a['lon'], 'ts': ts,
+            heard_hex = (a.get('hex') or '').lower().lstrip('~')
+            p.update({'hex': h, 'tail': t['tail'], 'lat': a['lat'], 'lon': a['lon'], 'ts': ts,
                       'onGround': onground, 'altFt': alt, 'gsKt': num(a.get('gs')), 'track': num(a.get('track')) or num(a.get('true_heading')),
                       'vsFpm': num(a.get('baro_rate')) or num(a.get('geom_rate')), 'callsign': (a.get('flight') or '').strip() or None,
-                      'squawk': a.get('squawk'), 'type': a.get('t'), 'source': src})
+                      'squawk': a.get('squawk'), 'type': a.get('t'), 'source': src,
+                      'heardHex': heard_hex or None})
             low = onground or (alt is not None and alt < 4000)
             ap = (nearest_airport(a['lat'], a['lon'], 6, 1) if low else None) or nearest_airport(a['lat'], a['lon'], 60, 2)
             p['near'] = ap
@@ -126,13 +174,19 @@ def poll_once():
                 tr = tr[-TRAIL_MAX:]
             p['trail'] = tr
             state['planes'][h] = p
-        tmp = STATE + '.tmp'; json.dump(state, open(tmp, 'w')); os.replace(tmp, STATE)
+        print(f"poll {src} ac={len(acs)} matched={len(seen)} {','.join(sorted(seen)) or 'none'}", flush=True)
+        if err: print(f'poll note {err}', flush=True)
+        save_state()
 
 def poller():
     while True:
         try: poll_once()
         except Exception as e:
-            print('poll error', e); state['lastError'] = str(e)
+            print('poll error', e, flush=True)
+            with lock:
+                state['lastError'] = str(e)
+                state['lastPoll'] = time.time()
+                save_state()
         time.sleep(POLL_S)
 
 class H(SimpleHTTPRequestHandler):
@@ -149,7 +203,7 @@ class H(SimpleHTTPRequestHandler):
         path = s.path.split('?')[0]
         if path == '/api/fleet':
             return s.send_json({'tails': fleet['tails']})
-        if path == '/api/state':
+        if path in ('/api/state', '/api/health'):
             with lock:
                 planes = {}
                 for h, p in state['planes'].items():

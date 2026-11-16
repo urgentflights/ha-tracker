@@ -301,7 +301,7 @@ function about() {
   const poll = st.pollSeconds ? ` The server checks the feed every ${st.pollSeconds} seconds.` : '';
   dialog('About the data', `<p>HA Tracker follows Hatzolah Air aircraft on a live map. Positions come from public, unfiltered ADS-B receiver networks.${poll} This page refreshes every 20 seconds.${src}</p>
     <p>US type, year and owner are from the FAA aircraft registry. Israeli helicopters are identified from the civil register and photographs in Hatzolah Air titles.</p>
-    <p>A position is only a transponder report — it does not say who is on board or why the aircraft is flying. Planes parked or flying outside receiver coverage show their last known spot, or “Not seen yet” if they have not been heard since this tracker started.</p>
+    <p>A position is only a transponder report — it does not say who is on board or why the aircraft is flying. Planes parked or flying outside receiver coverage show their last known spot, or “Not seen yet” if we do not yet have a position for them.</p>
     <p class="fine">Times are shown in your time zone (${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}).</p>`);
 }
 
