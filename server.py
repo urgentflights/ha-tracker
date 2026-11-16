@@ -13,12 +13,14 @@ UA = 'HATracker/1.0 (small private fleet tracker, ~1 req/30s)'
 # Query by ICAO hex and by registration so a Privacy ICAO Address (PIA)
 # still matches when the transponder reports our tail in `r` or `flight`.
 SOURCES = [
+    # adsb.fi has no batched /v2/reg (returns 400). Registration is queried on
+    # adsb.lol only, which is enough to catch a Privacy ICAO Address (PIA).
     ('adsb.lol',
      'https://api.adsb.lol/v2/hex/{}',
      'https://api.adsb.lol/v2/reg/{}'),
     ('adsb.fi',
      'https://opendata.adsb.fi/api/v2/hex/{}',
-     'https://opendata.adsb.fi/api/v2/reg/{}'),
+     None),
 ]
 TRAIL_MAX = 400
 
@@ -97,13 +99,15 @@ def fetch(hexes, regs):
     for name, hex_tpl, reg_tpl in SOURCES:
         try:
             out = fetch_list(hex_tpl, hexes)
-            try:
-                out += fetch_list(reg_tpl, regs)
-            except Exception as e:
-                errs.append(f'{name} reg: {e}')
-            return name, out, ('; '.join(errs) or None)
+            if reg_tpl:
+                try:
+                    out += fetch_list(reg_tpl, regs)
+                except Exception as e:
+                    print(f'poll note {name} reg: {e}', flush=True)
+            return name, out, None
         except Exception as e:
             errs.append(f'{name}: {e}')
+            print(f'poll note {name}: {e}', flush=True)
     return None, [], '; '.join(errs)
 
 def num(v): return v if isinstance(v, (int, float)) else None
