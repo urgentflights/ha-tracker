@@ -94,19 +94,26 @@ def fetch_list(tpl, keys):
         time.sleep(1.2)
     return out
 
+BLOCKED_UNTIL = {}  # source name -> epoch; set after HTTP 429 so we stop hammering a rate-limited source
+
 def fetch(hexes, regs):
     errs = []
     for name, hex_tpl, reg_tpl in SOURCES:
+        if BLOCKED_UNTIL.get(name, 0) > time.time():
+            errs.append(f'{name}: backing off after rate limit')
+            continue
         try:
             out = fetch_list(hex_tpl, hexes)
             if reg_tpl:
                 try:
                     out += fetch_list(reg_tpl, regs)
                 except Exception as e:
+                    if '429' in str(e): BLOCKED_UNTIL[name] = time.time() + 300
                     print(f'poll note {name} reg: {e}', flush=True)
             return name, out, None
         except Exception as e:
             errs.append(f'{name}: {e}')
+            if '429' in str(e): BLOCKED_UNTIL[name] = time.time() + 300
             print(f'poll note {name}: {e}', flush=True)
     return None, [], '; '.join(errs)
 
@@ -182,6 +189,127 @@ def poll_once():
         if err: print(f'poll note {err}', flush=True)
         save_state()
 
+
+# ---- history backfill from public ADS-B trace files (globe_history / live traces) ----
+# The free Render plan sleeps and loses its disk, so a flight that happens while we are
+# asleep is never seen by the live poller. On startup (and hourly) we pull each tail's
+# recent trace file, rebuild its last flights and last-known position from that, and
+# merge it into state unless the live poller already has something newer.
+TRACE_HOST = os.environ.get('TRACE_HOST', 'https://globe.adsb.lol')
+BACKFILL_DAYS = 4
+BACKFILL_EVERY_S = 3600
+backfill_info = {'lastRun': None, 'results': {}}
+
+def trace_urls(hexid):
+    hh = hexid[-2:]
+    urls = [f'{TRACE_HOST}/data/traces/{hh}/trace_full_{hexid}.json',
+            f'{TRACE_HOST}/data/traces/{hh}/trace_recent_{hexid}.json']
+    today = time.gmtime()
+    for d in range(1, BACKFILL_DAYS + 1):
+        g = time.gmtime(time.time() - d * 86400)
+        urls.append(f'{TRACE_HOST}/globe_history/{g.tm_year}/{g.tm_mon:02d}/{g.tm_mday:02d}/traces/{hh}/trace_full_{hexid}.json')
+    return urls
+
+def get_trace(url):
+    req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept-Encoding': 'gzip'})
+    r = urllib.request.urlopen(req, timeout=25); b = r.read()
+    if r.headers.get('Content-Encoding') == 'gzip' or b[:2] == b'\x1f\x8b': b = gzip.decompress(b)
+    return json.loads(b)
+
+def trace_points(j):
+    """-> [(ts, lat, lon, alt|'ground'|None, gs, vs)] absolute epoch seconds."""
+    base = j.get('timestamp') or 0
+    out = []
+    for p in j.get('trace') or []:
+        try:
+            if p[1] is None or p[2] is None: continue
+            alt = p[3] if (p[3] == 'ground' or isinstance(p[3], (int, float))) else None
+            out.append((base + p[0], p[1], p[2], alt, num(p[4]), num(p[7])))
+        except Exception: continue
+    return out
+
+def flights_from_points(pts, final_ts=None):
+    """Segment points into flights. Departure = ground->air, arrival = air->ground, or a signal
+    loss while low and close to an airport (arrival 'inferred'). Returns (flights, last_point)."""
+    pts = sorted(set(pts), key=lambda p: p[0])
+    flights = []; cur = None; prev = None
+    def ap_at(p, maxnm=8):
+        return nearest_airport(p[1], p[2], maxnm, 1)
+    def close(cur, endp, inferred):
+        a = ap_at(endp)
+        cur.update({'to': a and dict(code=a['code'], iata=a['iata'], name=a['name'], city=a['city']), 'arr': int(endp[0]), 'arrInferred': inferred})
+        flights.append(cur)
+    for p in pts:
+        air = p[3] != 'ground' and p[3] is not None
+        if prev is not None and cur is not None and p[0] - prev[0] > 1200:
+            if prev[3] != 'ground' and (prev[3] or 0) < 5000 and ap_at(prev, 6): close(cur, prev, True)
+            else: flights.append(dict(cur, to=None, arr=int(prev[0]), arrInferred=True, lost=True))
+            cur = None
+        if air and cur is None:
+            a = ap_at(prev if (prev and prev[3] == 'ground') else p)
+            cur = {'dep': int(p[0]), 'from': a and dict(code=a['code'], iata=a['iata'], name=a['name'], city=a['city'])}
+        elif not air and cur is not None and p[3] == 'ground':
+            close(cur, p, False); cur = None
+        prev = p
+    last = pts[-1] if pts else None
+    if cur is not None and last is not None:
+        age = (final_ts or time.time()) - last[0]
+        if age > 600 and (last[3] or 0) < 5000 and ap_at(last, 6): close(cur, last, True)
+        elif age > 600: flights.append(dict(cur, to=None, arr=int(last[0]), arrInferred=True, lost=True))
+        else: flights.append(dict(cur, to=None, arr=None, inProgress=True))
+    return flights, last
+
+def apply_backfill(t, flights, last):
+    h = t['hex']
+    with lock:
+        p = state['planes'].get(h) or {}
+        p['flights'] = flights[-8:]
+        if last and (not p.get('ts') or last[0] > p['ts'] + 1):
+            ts, lat, lon, alt = last[0], last[1], last[2], last[3]
+            onground = alt == 'ground'
+            altft = None if onground or alt is None else alt
+            p.update({'hex': h, 'tail': t['tail'], 'lat': lat, 'lon': lon, 'ts': ts, 'onGround': onground, 'altFt': altft,
+                      'gsKt': last[4], 'track': None, 'vsFpm': last[5], 'callsign': t['tail'], 'source': 'trace-backfill',
+                      'trail': []})
+            ap = nearest_airport(lat, lon, 6, 1) or nearest_airport(lat, lon, 60, 2)
+            p['near'] = ap
+            lf = flights[-1] if flights else None
+            if onground and ap and ap['distNm'] <= 3:
+                p['groundAirport'] = dict(ap, ts=ts); p['lastAirport'] = dict(ap, ts=ts)
+            elif lf and lf.get('arrInferred') and not lf.get('lost') and ap and ap['distNm'] <= 6:
+                p['lastAirport'] = dict(ap, ts=ts)  # probable arrival: signal lost on final approach
+            if lf and lf.get('from') and lf.get('dep'):
+                a0 = lf['from']; p['from'] = dict(a0, distNm=0.0, ts=lf['dep'], region='', country='')
+        state['planes'][h] = p
+        save_state()
+
+def backfill_once():
+    load_fleet()
+    res = {}
+    for t in fleet['tails']:
+        h = t.get('hex')
+        if not h: continue
+        pts = []; ok = []; errs = []
+        for u in trace_urls(h):
+            try:
+                pts += trace_points(get_trace(u)); ok.append(u.rsplit('/', 4)[-4] if 'globe_history' in u else u.rsplit('/', 1)[-1].split('_')[1])
+            except Exception as e:
+                errs.append(str(e)[:60])
+            time.sleep(0.6)
+        fl, last = flights_from_points(pts)
+        res[t['tail']] = {'files': ok, 'errors': errs[:3], 'points': len(pts), 'flights': len(fl),
+                          'last': last and [int(last[0]), last[1], last[2], last[3]]}
+        if pts: apply_backfill(t, fl, last)
+        print(f"backfill {t['tail']} points={len(pts)} flights={len(fl)} ok={len(ok)} err={errs[:2]}", flush=True)
+    backfill_info['lastRun'] = time.time(); backfill_info['results'] = res
+
+def backfiller():
+    time.sleep(3)
+    while True:
+        try: backfill_once()
+        except Exception as e: print('backfill error', e, flush=True)
+        time.sleep(BACKFILL_EVERY_S)
+
 def poller():
     while True:
         try: poll_once()
@@ -213,12 +341,13 @@ class H(SimpleHTTPRequestHandler):
                 for h, p in state['planes'].items():
                     planes[p['tail']] = {k: v for k, v in p.items() if not k.startswith('_')}
                 return s.send_json({'now': time.time(), 'pollSeconds': POLL_S, 'lastPoll': state['lastPoll'],
-                                    'source': state['lastSource'], 'error': state['lastError'], 'planes': planes})
+                                    'source': state['lastSource'], 'error': state['lastError'], 'backfill': backfill_info, 'planes': planes})
         return super().do_GET()
 
 if __name__ == '__main__':
     port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get('PORT', '8135'))
     load_fleet()
     threading.Thread(target=poller, daemon=True).start()
+    threading.Thread(target=backfiller, daemon=True).start()
     print(f'HA Tracker on http://0.0.0.0:{port}', flush=True)
     ThreadingHTTPServer(('0.0.0.0', port), H).serve_forever()

@@ -133,7 +133,7 @@ function enrich(t) {
     latitude: p.lat, longitude: p.lon, observedAt, lastAt: observedAt,
     track: p.track ?? null, speedKts: p.gsKt ?? null, altitudeFt: p.altFt ?? null, verticalFpm: p.vsFpm ?? null,
     callsign: p.callsign || null, place, near, from, cityLine: city,
-    trail, trailOpen, ahead
+    trail, trailOpen, ahead, flights: Array.isArray(p.flights) ? p.flights : []
   };
 }
 
@@ -187,6 +187,15 @@ function routeBar(a) {
   return `<span class="route" aria-label="Route"><b>${from ? code(from) : '?'}</b><span class="rt"><span class="rt-done" style="width:${pct}%"></span><span class="rt-plane" style="left:${pct}%">${plane}</span></span><b class="${to ? '' : 'q'}">${to ? code(to) : '?'}</b></span>`;
 }
 
+function flightsHtml(a) {
+  const fl = (a.flights || []).slice().reverse().slice(0, 5);
+  if (!fl.length) return '';
+  const fmt = ts => ts ? new Date(ts * 1000).toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}) : '';
+  const code = x => x ? esc(x.iata || x.code || x.city || '?') : '?';
+  const rows = fl.map(f => `<div><small>${fmt(f.dep)}</small><b>${code(f.from)} → ${f.inProgress ? 'in flight' : code(f.to)}${f.arrInferred && f.to ? ' (probable)' : ''}</b></div>`).join('');
+  return `<h3 class="sec">Recent flights</h3><div class="facts">${rows}</div>`;
+}
+
 function details(a) {
   const model = a.model || a.faaModel || 'Aircraft';
   return `<div class="more">
@@ -197,6 +206,7 @@ function details(a) {
       <div><small>Owner</small><b>${esc(a.owner || '—')}</b></div>
       <div><small>Based</small><b>${esc(a.region || '—')}</b></div>
     </div>
+    ${flightsHtml(a)}
     ${a.note ? `<p class="note">${esc(a.note)}</p>` : ''}
     ${a.source ? `<p class="fine">${esc(a.source)}</p>` : ''}
     <div class="links"><button class="share-btn" data-share="${esc(a.id)}" type="button">Share ↗</button></div>
