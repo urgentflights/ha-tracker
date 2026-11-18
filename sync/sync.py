@@ -147,7 +147,7 @@ def push(st, src, notes):
     planes = {}
     for h, p in st['planes'].items():
         if p.get('lat') is None: continue
-        planes[h] = {k: v for k, v in p.items() if not k.startswith('_')}
+        planes[h] = dict({k: v for k, v in p.items() if not k.startswith('_')}, checkedAt=int(time.time()))
     body = json.dumps({'planes': planes, 'source': 'box-sync', 'syncAt': time.time(), 'feed': src}).encode()
     last = None
     for attempt in range(3):

@@ -10,3 +10,4 @@ sync/sync.pid
 sync/sync.lock
 sync/last_success
 sync/nohup.out
+sync/ensure.lock
