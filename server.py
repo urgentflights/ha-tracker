@@ -197,7 +197,7 @@ def poll_once():
 # merge it into state unless the live poller already has something newer.
 TRACE_HOST = os.environ.get('TRACE_HOST', 'https://globe.adsb.lol')
 BACKFILL_DAYS = 4
-BACKFILL_EVERY_S = 3600
+BACKFILL_EVERY_S = 6 * 3600  # trace hosts are blocking Render/datacenter IPs (403), so keep this rare
 backfill_info = {'lastRun': None, 'results': {}}
 
 def trace_urls(hexid):
@@ -295,6 +295,7 @@ def backfill_once():
                 pts += trace_points(get_trace(u)); ok.append(u.rsplit('/', 4)[-4] if 'globe_history' in u else u.rsplit('/', 1)[-1].split('_')[1])
             except Exception as e:
                 errs.append(str(e)[:60])
+                if '403' in str(e): break  # host blocks this network; don't hammer it
             time.sleep(0.6)
         fl, last = flights_from_points(pts)
         res[t['tail']] = {'files': ok, 'errors': errs[:3], 'points': len(pts), 'flights': len(fl),
