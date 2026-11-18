@@ -4,3 +4,9 @@ __pycache__/
 *.pyc
 data/*.tmp
 .DS_Store
+sync/.secret
+sync/sync_state.json
+sync/sync.pid
+sync/sync.lock
+sync/last_success
+sync/nohup.out

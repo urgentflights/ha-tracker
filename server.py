@@ -23,6 +23,8 @@ SOURCES = [
      None),
 ]
 TRAIL_MAX = 400
+INGEST_SECRET = os.environ.get('INGEST_SECRET', '')
+ingest_info = {'lastAt': None, 'count': 0, 'source': None, 'syncAt': None}
 
 lock = threading.Lock()
 fleet = {'tails': []}; fleet_mtime = 0
@@ -311,6 +313,32 @@ def backfiller():
         except Exception as e: print('backfill error', e, flush=True)
         time.sleep(BACKFILL_EVERY_S)
 
+
+def ingest(payload):
+    """Merge plane records pushed by the box-side sync (authenticated). Newer observation wins;
+    flights lists are unioned by departure time so neither side loses history."""
+    planes = payload.get('planes') or {}
+    n = 0
+    with lock:
+        for h, inc in planes.items():
+            if not isinstance(inc, dict) or not isinstance(inc.get('lat'), (int, float)) or not isinstance(inc.get('ts'), (int, float)): continue
+            h = str(h).lower()
+            if not re.match(r'^[0-9a-f]{6}$', h): continue
+            cur = state['planes'].get(h) or {}
+            fl = {}
+            for f in (cur.get('flights') or []) + (inc.get('flights') or []):  # incoming wins on same departure
+                if isinstance(f, dict) and f.get('dep'): fl[int(f['dep'])] = f
+            merged_flights = [fl[k] for k in sorted(fl)][-8:]
+            if not cur.get('ts') or inc['ts'] >= cur['ts'] - 1:
+                keep = {k: v for k, v in cur.items() if k.startswith('_')}
+                cur = dict(inc); cur.update(keep); cur['hex'] = h
+                cur['source'] = inc.get('source') or 'box-sync'
+            cur['flights'] = merged_flights
+            state['planes'][h] = cur; n += 1
+        ingest_info.update({'lastAt': time.time(), 'count': n, 'source': payload.get('source') or 'box-sync', 'syncAt': payload.get('syncAt')})
+        save_state()
+    return n
+
 def poller():
     while True:
         try: poll_once()
@@ -332,6 +360,23 @@ class H(SimpleHTTPRequestHandler):
     def end_headers(s):
         if not s.path.startswith('/api/'): s.send_header('Cache-Control', 'no-cache')
         super().end_headers()
+    def do_POST(s):
+        path = s.path.split('?')[0]
+        if path != '/api/ingest': s.send_response(404); s.end_headers(); return
+        import hmac
+        sent = s.headers.get('X-Ingest-Secret', '')
+        if not INGEST_SECRET or not hmac.compare_digest(sent.encode(), INGEST_SECRET.encode()):
+            s.send_response(401); s.send_header('Content-Length', '0'); s.end_headers(); return
+        try:
+            ln = int(s.headers.get('Content-Length') or 0)
+            if ln <= 0 or ln > 2_000_000: raise ValueError('bad length')
+            payload = json.loads(s.rfile.read(ln))
+            n = ingest(payload)
+        except Exception as e:
+            b = json.dumps({'ok': False, 'error': str(e)[:100]}).encode()
+            s.send_response(400); s.send_header('Content-Type', 'application/json'); s.send_header('Content-Length', str(len(b))); s.end_headers(); s.wfile.write(b); return
+        return s.send_json({'ok': True, 'planes': n})
+
     def do_GET(s):
         path = s.path.split('?')[0]
         if path == '/api/fleet':
@@ -342,7 +387,7 @@ class H(SimpleHTTPRequestHandler):
                 for h, p in state['planes'].items():
                     planes[p['tail']] = {k: v for k, v in p.items() if not k.startswith('_')}
                 return s.send_json({'now': time.time(), 'pollSeconds': POLL_S, 'lastPoll': state['lastPoll'],
-                                    'source': state['lastSource'], 'error': state['lastError'], 'backfill': backfill_info, 'planes': planes})
+                                    'source': state['lastSource'], 'error': state['lastError'], 'backfill': backfill_info, 'ingest': ingest_info, 'planes': planes})
         return super().do_GET()
 
 if __name__ == '__main__':
