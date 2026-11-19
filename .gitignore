@@ -11,3 +11,5 @@ sync/sync.lock
 sync/last_success
 sync/nohup.out
 sync/ensure.lock
+sync/heartbeat
+sync/wrapper.pid

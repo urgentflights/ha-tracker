@@ -314,7 +314,7 @@ def backfiller():
         time.sleep(BACKFILL_EVERY_S)
 
 
-def ingest(payload):
+def ingest(payload, record=True):
     """Merge plane records pushed by the box-side sync (authenticated). Newer observation wins;
     flights lists are unioned by departure time so neither side loses history."""
     planes = payload.get('planes') or {}
@@ -335,9 +335,35 @@ def ingest(payload):
                 cur['source'] = inc.get('source') or 'box-sync'
             cur['flights'] = merged_flights
             state['planes'][h] = cur; n += 1
-        ingest_info.update({'lastAt': time.time(), 'count': n, 'source': payload.get('source') or 'box-sync', 'syncAt': payload.get('syncAt')})
+        if record: ingest_info.update({'lastAt': time.time(), 'count': n, 'source': payload.get('source') or 'box-sync', 'syncAt': payload.get('syncAt')})
         save_state()
     return n
+
+
+# ---- seed from the repo's latest snapshot (GitHub raw) ----
+# The box sync commits data/state.json, but a commit does not redeploy the free Render service, so the deployed
+# copy of the file goes stale. After any restart we pull the newest committed snapshot and merge it in (newer
+# observation wins), and keep doing so while the box sync is not pushing.
+SNAPSHOT_URL = os.environ.get('SNAPSHOT_URL', 'https://raw.githubusercontent.com/urgentflights/ha-tracker/main/data/state.json')
+snapshot_info = {'lastOk': None, 'lastError': None, 'planes': 0}
+
+def seed_from_github():
+    try:
+        req = urllib.request.Request(SNAPSHOT_URL + '?t=' + str(int(time.time())), headers={'User-Agent': UA, 'Cache-Control': 'no-cache'})
+        j = json.loads(urllib.request.urlopen(req, timeout=20).read())
+        n = ingest({'planes': j.get('planes') or {}}, record=False)
+        snapshot_info.update({'lastOk': time.time(), 'lastError': None, 'planes': n})
+        print(f'seeded {n} planes from {SNAPSHOT_URL}', flush=True)
+    except Exception as e:
+        snapshot_info['lastError'] = str(e)[:120]
+        print('snapshot seed failed', e, flush=True)
+
+def seeder():
+    time.sleep(2)
+    seed_from_github()
+    while True:
+        time.sleep(900)
+        if not ingest_info['lastAt'] or time.time() - ingest_info['lastAt'] > 900: seed_from_github()
 
 def poller():
     while True:
@@ -387,13 +413,14 @@ class H(SimpleHTTPRequestHandler):
                 for h, p in state['planes'].items():
                     planes[p['tail']] = {k: v for k, v in p.items() if not k.startswith('_')}
                 return s.send_json({'now': time.time(), 'pollSeconds': POLL_S, 'lastPoll': state['lastPoll'],
-                                    'source': state['lastSource'], 'error': state['lastError'], 'backfill': backfill_info, 'ingest': ingest_info, 'planes': planes})
+                                    'source': state['lastSource'], 'error': state['lastError'], 'backfill': backfill_info, 'ingest': ingest_info, 'snapshot': snapshot_info, 'planes': planes})
         return super().do_GET()
 
 if __name__ == '__main__':
     port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get('PORT', '8135'))
     load_fleet()
     threading.Thread(target=poller, daemon=True).start()
-    threading.Thread(target=backfiller, daemon=True).start()
+    threading.Thread(target=seeder, daemon=True).start()
+    if os.environ.get('TRACE_BACKFILL') == '1': threading.Thread(target=backfiller, daemon=True).start()  # trace hosts 403 Render; off by default
     print(f'HA Tracker on http://0.0.0.0:{port}', flush=True)
     ThreadingHTTPServer(('0.0.0.0', port), H).serve_forever()

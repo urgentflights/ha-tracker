@@ -11,7 +11,7 @@ NOTE: adsb.lol's *trace/globe_history* hosts block this box's network (403), so 
 is rebuilt from our own polling, not from trace files. Flights shorter than the poll
 interval, or outside ADS-B coverage, can still be missed.
 """
-import fcntl, gzip, hashlib, json, os, subprocess, sys, time, urllib.request, datetime
+import fcntl, gzip, hashlib, json, os, signal, socket, subprocess, sys, threading, time, urllib.request, datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
@@ -28,6 +28,10 @@ STATEF = os.path.join(HERE, 'sync_state.json'); SECRETF = os.path.join(HERE, '.s
 SNAP = os.path.join(ROOT, 'data', 'state.json'); FLEETF = os.path.join(ROOT, 'data', 'fleet.json')
 IL = datetime.timezone(datetime.timedelta(hours=2))
 LOW_FT = 5000
+HEARTBEAT = os.path.join(HERE, 'heartbeat')
+CYCLE_DEADLINE_S = 240   # a cycle (fetch+push) taking longer than this is treated as hung -> process exits, wrapper restarts it
+socket.setdefaulttimeout(30)
+cycle_started = [0.0]
 
 def log(*a):
     line = datetime.datetime.now(IL).strftime('%Y-%m-%d %H:%M:%S') + ' ' + ' '.join(str(x) for x in a)
@@ -162,15 +166,19 @@ def push(st, src, notes):
         time.sleep(20)  # site may be waking from sleep
     return False, last
 
-def snap_hash(st):
+def snap_hash(st, major=False):
     d = {}
     for h, p in sorted(st['planes'].items()):
-        d[h] = [round(p.get('lat', 0), 3), round(p.get('lon', 0), 3), p.get('onGround'), p.get('flights'), (p.get('lastAirport') or {}).get('code')]
+        d[h] = [p.get('onGround'), p.get('flights'), (p.get('lastAirport') or {}).get('code'), (p.get('groundAirport') or {}).get('code')]
+        if not major: d[h] += [round(p.get('lat', 0), 3), round(p.get('lon', 0), 3)]
     return hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()
 
 def maybe_commit(st, now):
-    h = snap_hash(st)
-    if h == st.get('commitHash') or now - st.get('lastCommit', 0) < COMMIT_MIN_S: return
+    """Commit the snapshot: soon (>=5 min) after flights/airport state change, else >=30 min after any position change."""
+    h, hm = snap_hash(st), snap_hash(st, True)
+    since = now - st.get('lastCommit', 0)
+    if h == st.get('commitHash'): return
+    if not ((hm != st.get('commitHashMajor') and since >= 300) or since >= COMMIT_MIN_S): return
     snap = {'planes': {k: {kk: vv for kk, vv in p.items() if kk != 'trail'} for k, p in st['planes'].items()},
             'lastPoll': None, 'lastSource': None, 'lastError': None}
     json.dump(snap, open(SNAP, 'w'))
@@ -178,9 +186,10 @@ def maybe_commit(st, now):
         run = lambda *c: subprocess.run(c, cwd=ROOT, capture_output=True, text=True, timeout=120)
         run('git', 'add', 'data/state.json')
         c = run('git', 'commit', '-m', 'Box sync: update last-known positions and flights')
-        if c.returncode != 0 and 'nothing to commit' in (c.stdout + c.stderr): st.update({'commitHash': h, 'lastCommit': now}); return
+        if c.returncode != 0 and 'nothing to commit' in (c.stdout + c.stderr):
+            st.update({'commitHash': h, 'commitHashMajor': hm, 'lastCommit': now}); return
         p = run('git', 'push', 'origin', 'HEAD')
-        if p.returncode == 0: log('snapshot committed and pushed'); st.update({'commitHash': h, 'lastCommit': now})
+        if p.returncode == 0: log('snapshot committed and pushed'); st.update({'commitHash': h, 'commitHashMajor': hm, 'lastCommit': now})
         else: log('snapshot push failed:', (p.stderr or '')[-200:].replace('\n', ' '))
     except Exception as e:
         log('snapshot commit error', e)
@@ -212,23 +221,47 @@ def cycle(st):
     save_state(st)
     if ok: maybe_commit(st, now); save_state(st)
 
+def heartbeat_thread():
+    """Touch the heartbeat file every 10 s (wall clock). The watchdog uses it to tell 'alive' from 'hung/suspended',
+    and this thread also kills the process if a cycle hangs past CYCLE_DEADLINE_S."""
+    while True:
+        try:
+            open(HEARTBEAT, 'w').write(str(int(time.time())))
+            cs = cycle_started[0]
+            if cs and time.time() - cs > CYCLE_DEADLINE_S:
+                log(f'cycle hung >{CYCLE_DEADLINE_S}s; exiting so the wrapper restarts us'); os._exit(3)
+        except Exception: pass
+        time.sleep(10)
+
+def on_signal(sig, frm):
+    log(f'received signal {signal.Signals(sig).name}; exiting' if sig != signal.SIGHUP else 'received SIGHUP (ignored)')
+    if sig != signal.SIGHUP: os._exit(0)
+
 def main():
     lf = open(LOCK, 'w')
     try: fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError: print('another instance holds the lock'); sys.exit(0)
     open(PIDF, 'w').write(str(os.getpid()))
+    for sg in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT): signal.signal(sg, on_signal)
     log(f'sync started pid={os.getpid()} interval={SYNC_S}s site={SITE}')
+    threading.Thread(target=heartbeat_thread, daemon=True).start()
     st = load_state()
+    due = 0.0; prev_cycle = time.time()
     while True:
+        # sleep in short wall-clock slices so a resume after the box was suspended runs the next cycle at once
+        if time.time() < due: time.sleep(5); continue
+        gap = time.time() - prev_cycle
+        if prev_cycle and gap > SYNC_S * 2.5: log(f'gap of {int(gap)}s since last cycle (box suspended or stalled?)')
+        cycle_started[0] = time.time()
         try:
             cycle(st)
-        except Exception as e:
+        except BaseException as e:
             log('cycle error', repr(e))
+        cycle_started[0] = 0.0
+        prev_cycle = time.time(); due = prev_cycle + SYNC_S
         try:
-            if os.path.exists(LOG) and os.path.getsize(LOG) > 3_000_000:
-                open(LOG, 'w').close()
+            if os.path.exists(LOG) and os.path.getsize(LOG) > 3_000_000: open(LOG, 'w').close()
         except Exception: pass
-        time.sleep(SYNC_S)
 
 if __name__ == '__main__':
     main()
