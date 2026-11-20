@@ -24,7 +24,7 @@ SOURCES = [
 ]
 TRAIL_MAX = 400
 INGEST_SECRET = os.environ.get('INGEST_SECRET', '')
-ingest_info = {'lastAt': None, 'count': 0, 'source': None, 'syncAt': None}
+ingest_info = {'lastAt': None, 'count': 0, 'source': None, 'syncAt': None, 'tracked': [], 'heard': {}}
 
 lock = threading.Lock()
 fleet = {'tails': []}; fleet_mtime = 0
@@ -335,7 +335,8 @@ def ingest(payload, record=True):
                 cur['source'] = inc.get('source') or 'box-sync'
             cur['flights'] = merged_flights
             state['planes'][h] = cur; n += 1
-        if record: ingest_info.update({'lastAt': time.time(), 'count': n, 'source': payload.get('source') or 'box-sync', 'syncAt': payload.get('syncAt')})
+        if record: ingest_info.update({'lastAt': time.time(), 'count': n, 'source': payload.get('source') or 'box-sync', 'syncAt': payload.get('syncAt'),
+                                       'tracked': [str(x)[:12] for x in (payload.get('tracked') or [])][:50], 'heard': payload.get('heard') if isinstance(payload.get('heard'), dict) else {}})
         save_state()
     return n
 

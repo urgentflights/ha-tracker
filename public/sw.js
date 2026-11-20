@@ -1,4 +1,4 @@
-const C = 'hat-v6', SHELL = ['./', 'index.html', 'app.js?v=6', 'map.js?v=6', 'styles.css?v=6', 'vendor/maplibre-gl.js', 'vendor/maplibre-gl.css', 'manifest.webmanifest', 'icons/icon-192.png'];
+const C = 'hat-v7', SHELL = ['./', 'index.html', 'app.js?v=7', 'map.js?v=7', 'styles.css?v=7', 'vendor/maplibre-gl.js', 'vendor/maplibre-gl.css', 'manifest.webmanifest', 'icons/icon-192.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(C).then(c => c.addAll(SHELL).catch(() => {}))); self.skipWaiting(); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(k => Promise.all(k.filter(x => x !== C).map(x => caches.delete(x))))); self.clients.claim(); });
 self.addEventListener('fetch', e => {

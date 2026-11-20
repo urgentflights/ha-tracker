@@ -88,6 +88,10 @@ def save_state(st):
 def apt(ap):
     return ap and {k: ap[k] for k in ('code', 'iata', 'name', 'city') if k in ap}
 
+def near_text(lat, lon):
+    ap = S.nearest_airport(lat, lon, 60, 1)
+    return ap and (ap.get('city') or ap.get('name'))
+
 def open_flight(p):
     fl = p.get('flights') or []
     return fl[-1] if fl and fl[-1].get('arr') is None else None
@@ -114,7 +118,8 @@ def observe(p, a, t, src, now):
         p['trail'] = []
         if of:
             end = S.nearest_airport(a['lat'], a['lon'], 8, 1)
-            of.update({'to': apt(end), 'arr': int(ts), 'arrInferred': False}); of.pop('lost', None)
+            of.update({'to': apt(end), 'arr': int(ts), 'arrInferred': False}); of.pop('lost', None); of.pop('inProgress', None)
+            if not end: of['toNear'] = near_text(a['lat'], a['lon'])
     else:
         if not of:
             origin = None
@@ -122,6 +127,7 @@ def observe(p, a, t, src, now):
             if low and ap and ap['distNm'] <= 6 and (alt or 0) < 3000: origin = ap       # seen right at the airport
             elif known and ts - known.get('ts', 0) < 86400: origin = known              # last airport it was known at
             of = {'dep': int(ts), 'from': apt(origin), 'inProgress': True}
+            if not origin: of['fromNear'] = near_text(a['lat'], a['lon'])
             if not (prev_ground or (prev_ts and ts - prev_ts < 600)): of['depApprox'] = True
             fl.append(of); p['from'] = dict(origin, ts=int(ts)) if origin else None
             p['trail'] = []
@@ -144,15 +150,16 @@ def expire(p, now):
         of.update({'to': apt(ap), 'arr': int(p['ts']), 'arrInferred': True}); of.pop('inProgress', None)
         p['lastAirport'] = dict(ap, ts=p['ts'])
     elif age > 3600:
-        of.update({'to': None, 'arr': int(p['ts']), 'arrInferred': True, 'lost': True}); of.pop('inProgress', None)
+        of.update({'to': None, 'toNear': near_text(p['lat'], p['lon']), 'arr': int(p['ts']), 'arrInferred': True, 'lost': True}); of.pop('inProgress', None)
 
 # ---------- push / commit ----------
-def push(st, src, notes):
+def push(st, src, notes, tracked=()):
     planes = {}
     for h, p in st['planes'].items():
         if p.get('lat') is None: continue
         planes[h] = dict({k: v for k, v in p.items() if not k.startswith('_')}, checkedAt=int(time.time()))
-    body = json.dumps({'planes': planes, 'source': 'box-sync', 'syncAt': time.time(), 'feed': src}).encode()
+    body = json.dumps({'planes': planes, 'source': 'box-sync', 'syncAt': time.time(), 'feed': src,
+                       'tracked': list(tracked), 'heard': st.get('heard', {})}).encode()
     last = None
     for attempt in range(3):
         try:
@@ -199,10 +206,14 @@ def cycle(st):
     tails = load_fleet(); now = time.time()
     by_hex = {t['hex']: t for t in tails if t['hex']}; by_reg = {t['tail']: t for t in tails}
     src, acs, notes = fetch(tails)
-    seen = set()
+    seen = set(); heard = st.setdefault('heard', {})
     if src:
         for a in acs:
-            if a.get('lat') is None: continue
+            if a.get('lat') is None:
+                # transponder heard but no position (e.g. mode_s only): remember that it is alive
+                h0 = (a.get('hex') or '').lower().lstrip('~'); t0 = by_hex.get(h0) or by_reg.get((a.get('r') or '').upper())
+                if t0: heard[t0['tail']] = {'ts': int(now - (S.num(a.get('seen')) or 0)), 'hex': h0, 'type': a.get('type')}
+                continue
             h = (a.get('hex') or '').lower().lstrip('~'); r = (a.get('r') or '').upper().replace(' ', '')
             fl = (a.get('flight') or '').upper().replace(' ', '')
             t = by_hex.get(h) or by_reg.get(r) or by_reg.get(fl)
@@ -211,8 +222,8 @@ def cycle(st):
             p = st['planes'].setdefault(key, {})
             if observe(p, a, t, src, now): seen.add(t['tail'])
     for p in st['planes'].values(): expire(p, now)
-    log(f"fetch {src or 'FAILED'} ac={len(acs)} matched={','.join(sorted(seen)) or 'none'}" + (f" notes={'; '.join(notes)}" if notes else ''))
-    ok, msg = push(st, src, notes)
+    log(f"fetch {src or 'FAILED'} tracking={len(tails)} ac={len(acs)} matched={','.join(sorted(seen)) or 'none'}" + (f" notes={'; '.join(notes)}" if notes else ''))
+    ok, msg = push(st, src, notes, [t['tail'] for t in tails])
     if ok:
         open(OK, 'w').write(f"{int(time.time())} {datetime.datetime.now(IL).isoformat(timespec='seconds')}\n")
         log('push ok:', msg)

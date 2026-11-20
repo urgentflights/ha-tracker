@@ -191,8 +191,8 @@ function flightsHtml(a) {
   const fl = (a.flights || []).slice().reverse().slice(0, 5);
   if (!fl.length) return '';
   const fmt = ts => ts ? new Date(ts * 1000).toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}) : '';
-  const code = x => x ? esc(x.iata || x.code || x.city || '?') : '?';
-  const rows = fl.map(f => `<div><small>${fmt(f.dep)}</small><b>${code(f.from)} → ${f.inProgress ? 'in flight' : code(f.to)}${f.arrInferred && f.to ? ' (probable)' : ''}</b></div>`).join('');
+  const code = (x, near) => x ? esc(x.iata || x.code || x.city || '?') : (near ? 'near ' + esc(near) : '?');
+  const rows = fl.map(f => `<div><small>${fmt(f.dep)}</small><b>${code(f.from, f.fromNear)} → ${f.inProgress ? 'in flight' : code(f.to, f.toNear)}${f.arrInferred && f.to ? ' (probable)' : ''}</b></div>`).join('');
   return `<h3 class="sec">Recent flights</h3><div class="facts">${rows}</div>`;
 }
 
